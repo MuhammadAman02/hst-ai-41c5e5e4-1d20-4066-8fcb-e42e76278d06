@@ -1,10 +1,11 @@
 app = "subway-surfers-game"
-primary_region = "iad"
+primary_region = "dfw"
 
 [build]
 
 [env]
   PORT = "8000"
+  HOST = "0.0.0.0"
 
 [http_service]
   internal_port = 8000
@@ -14,7 +15,17 @@ primary_region = "iad"
   min_machines_running = 0
   processes = ["app"]
 
-[[vm]]
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  timeout = "5s"
+  path = "/api/game/health"
+
+[vm]
   cpu_kind = "shared"
   cpus = 1
   memory_mb = 512
+
+[[vm.env]]
+  DATABASE_URL = "sqlite:///./subway_surfers.db"
