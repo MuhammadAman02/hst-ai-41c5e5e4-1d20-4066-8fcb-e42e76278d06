@@ -1,354 +1,568 @@
-from nicegui import ui, events
-import asyncio
-import random
-import math
-from typing import List, Dict, Any
-import time
+from nicegui import ui, app
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+import os
 
-# Game constants
-GAME_WIDTH = 800
-GAME_HEIGHT = 600
-PLAYER_WIDTH = 40
-PLAYER_HEIGHT = 60
-OBSTACLE_WIDTH = 60
-OBSTACLE_HEIGHT = 80
-COIN_SIZE = 20
-INITIAL_SPEED = 3
-SPEED_INCREMENT = 0.1
-JUMP_POWER = 15
-GRAVITY = 0.8
+# Import API routes
+from api.routes.game import router as game_router
+from api.routes.scores import router as scores_router
 
-class GameObject:
-    def __init__(self, x: float, y: float, width: float, height: float, color: str):
-        self.x = x
-        self.y = y
-        self.width = width
-        self.height = height
-        self.color = color
-        self.velocity_y = 0
-        self.on_ground = False
+# Configure FastAPI app
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-class GameState:
-    def __init__(self):
-        self.reset()
-    
-    def reset(self):
-        self.running = False
-        self.paused = False
-        self.game_over = False
-        self.score = 0
-        self.distance = 0
-        self.coins_collected = 0
-        self.speed = INITIAL_SPEED
-        self.player = GameObject(100, GAME_HEIGHT - 150 - PLAYER_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, '#FF6B6B')
-        self.obstacles: List[GameObject] = []
-        self.coins: List[GameObject] = []
-        self.background_x = 0
-        self.ground_y = GAME_HEIGHT - 150
-        self.keys_pressed = set()
+# Include API routes
+app.include_router(game_router, prefix="/api/game", tags=["game"])
+app.include_router(scores_router, prefix="/api/scores", tags=["scores"])
 
-game_state = GameState()
+# Serve React build files
+if os.path.exists("frontend/dist"):
+    app.mount("/static", StaticFiles(directory="frontend/dist/assets"), name="static")
 
-def check_collision(obj1: GameObject, obj2: GameObject) -> bool:
-    """Check if two game objects are colliding"""
-    return (obj1.x < obj2.x + obj2.width and
-            obj1.x + obj1.width > obj2.x and
-            obj1.y < obj2.y + obj2.height and
-            obj1.y + obj1.height > obj2.y)
-
-def spawn_obstacle():
-    """Spawn a new obstacle at the right edge of the screen"""
-    obstacle_y = game_state.ground_y - OBSTACLE_HEIGHT
-    obstacle = GameObject(GAME_WIDTH, obstacle_y, OBSTACLE_WIDTH, OBSTACLE_HEIGHT, '#4ECDC4')
-    game_state.obstacles.append(obstacle)
-
-def spawn_coin():
-    """Spawn a new coin at a random position"""
-    coin_x = GAME_WIDTH + random.randint(50, 200)
-    coin_y = random.randint(game_state.ground_y - 200, game_state.ground_y - 50)
-    coin = GameObject(coin_x, coin_y, COIN_SIZE, COIN_SIZE, '#FFD93D')
-    game_state.coins.append(coin)
-
-def update_player():
-    """Update player physics and position"""
-    player = game_state.player
-    
-    # Handle jumping
-    if not player.on_ground:
-        player.velocity_y += GRAVITY
-    
-    # Update position
-    player.y += player.velocity_y
-    
-    # Ground collision
-    if player.y + player.height >= game_state.ground_y:
-        player.y = game_state.ground_y - player.height
-        player.velocity_y = 0
-        player.on_ground = True
-    else:
-        player.on_ground = False
-    
-    # Horizontal movement
-    if 'ArrowLeft' in game_state.keys_pressed or 'KeyA' in game_state.keys_pressed:
-        player.x = max(0, player.x - 5)
-    if 'ArrowRight' in game_state.keys_pressed or 'KeyD' in game_state.keys_pressed:
-        player.x = min(GAME_WIDTH - player.width, player.x + 5)
-
-def update_game():
-    """Update game logic"""
-    if not game_state.running or game_state.paused or game_state.game_over:
-        return
-    
-    # Update player
-    update_player()
-    
-    # Move obstacles
-    for obstacle in game_state.obstacles[:]:
-        obstacle.x -= game_state.speed
-        if obstacle.x + obstacle.width < 0:
-            game_state.obstacles.remove(obstacle)
-    
-    # Move coins
-    for coin in game_state.coins[:]:
-        coin.x -= game_state.speed
-        if coin.x + coin.width < 0:
-            game_state.coins.remove(coin)
-    
-    # Spawn new obstacles
-    if len(game_state.obstacles) == 0 or game_state.obstacles[-1].x < GAME_WIDTH - 300:
-        if random.random() < 0.3:  # 30% chance to spawn obstacle
-            spawn_obstacle()
-    
-    # Spawn new coins
-    if random.random() < 0.1:  # 10% chance to spawn coin
-        spawn_coin()
-    
-    # Check collisions with obstacles
-    for obstacle in game_state.obstacles:
-        if check_collision(game_state.player, obstacle):
-            game_state.game_over = True
-            return
-    
-    # Check collisions with coins
-    for coin in game_state.coins[:]:
-        if check_collision(game_state.player, coin):
-            game_state.coins.remove(coin)
-            game_state.coins_collected += 1
-            game_state.score += 10
-    
-    # Update score and speed
-    game_state.distance += game_state.speed
-    game_state.score += 1
-    game_state.speed += SPEED_INCREMENT / 100
-    
-    # Update background
-    game_state.background_x -= game_state.speed / 2
-
-def draw_game(canvas_content: str) -> str:
-    """Generate SVG content for the game"""
-    if not game_state.running:
-        return '''
-        <svg width="800" height="600" style="background: linear-gradient(to bottom, #87CEEB, #4682B4);">
-            <text x="400" y="250" text-anchor="middle" fill="#FFD93D" font-size="48" font-weight="bold">
-                SUBWAY SURFERS
-            </text>
-            <text x="400" y="300" text-anchor="middle" fill="white" font-size="24">
-                Press SPACE or ↑ to Start
-            </text>
-            <text x="400" y="350" text-anchor="middle" fill="white" font-size="18">
-                Use ← → or A D to move, SPACE or ↑ to jump
-            </text>
-        </svg>
-        '''
-    
-    svg_content = f'''
-    <svg width="{GAME_WIDTH}" height="{GAME_HEIGHT}" style="background: linear-gradient(to bottom, #87CEEB, #4682B4);">
-        <!-- Background buildings -->
-        <rect x="{int(game_state.background_x) % 200}" y="400" width="100" height="200" fill="#2C3E50" opacity="0.3"/>
-        <rect x="{int(game_state.background_x) % 200 + 150}" y="350" width="80" height="250" fill="#34495E" opacity="0.3"/>
-        <rect x="{int(game_state.background_x) % 200 + 300}" y="380" width="120" height="220" fill="#2C3E50" opacity="0.3"/>
-        
-        <!-- Ground -->
-        <rect x="0" y="{game_state.ground_y}" width="{GAME_WIDTH}" height="{GAME_HEIGHT - game_state.ground_y}" fill="#95A5A6"/>
-        
-        <!-- Ground pattern -->
-        <rect x="{int(game_state.background_x * 2) % 100}" y="{game_state.ground_y + 10}" width="50" height="5" fill="#7F8C8D"/>
-        <rect x="{int(game_state.background_x * 2) % 100 + 100}" y="{game_state.ground_y + 10}" width="50" height="5" fill="#7F8C8D"/>
-        <rect x="{int(game_state.background_x * 2) % 100 + 200}" y="{game_state.ground_y + 10}" width="50" height="5" fill="#7F8C8D"/>
-        
-        <!-- Player -->
-        <rect x="{game_state.player.x}" y="{game_state.player.y}" width="{game_state.player.width}" height="{game_state.player.height}" 
-              fill="{game_state.player.color}" rx="5" stroke="#E74C3C" stroke-width="2"/>
-        
-        <!-- Player details -->
-        <circle cx="{game_state.player.x + 15}" cy="{game_state.player.y + 15}" r="8" fill="#F39C12"/>
-        <rect x="{game_state.player.x + 10}" y="{game_state.player.y + 25}" width="20" height="25" fill="#3498DB"/>
-        
-        <!-- Obstacles -->
-    '''
-    
-    for obstacle in game_state.obstacles:
-        svg_content += f'''
-        <rect x="{obstacle.x}" y="{obstacle.y}" width="{obstacle.width}" height="{obstacle.height}" 
-              fill="{obstacle.color}" rx="5" stroke="#16A085" stroke-width="3"/>
-        <rect x="{obstacle.x + 10}" y="{obstacle.y + 10}" width="{obstacle.width - 20}" height="10" fill="#1ABC9C"/>
-        '''
-    
-    # Coins
-    for coin in game_state.coins:
-        svg_content += f'''
-        <circle cx="{coin.x + coin.width/2}" cy="{coin.y + coin.height/2}" r="{coin.width/2}" 
-                fill="{coin.color}" stroke="#F1C40F" stroke-width="2"/>
-        <text x="{coin.x + coin.width/2}" y="{coin.y + coin.height/2 + 5}" text-anchor="middle" 
-              fill="#E67E22" font-size="12" font-weight="bold">$</text>
-        '''
-    
-    # UI Elements
-    svg_content += f'''
-        <!-- Score -->
-        <rect x="10" y="10" width="200" height="80" fill="rgba(0,0,0,0.7)" rx="10"/>
-        <text x="20" y="35" fill="#FFD93D" font-size="18" font-weight="bold">Score: {game_state.score}</text>
-        <text x="20" y="55" fill="#4ECDC4" font-size="16">Distance: {int(game_state.distance)}</text>
-        <text x="20" y="75" fill="#FF6B6B" font-size="16">Coins: {game_state.coins_collected}</text>
-        
-        <!-- Speed indicator -->
-        <rect x="{GAME_WIDTH - 120}" y="10" width="100" height="30" fill="rgba(0,0,0,0.7)" rx="5"/>
-        <text x="{GAME_WIDTH - 115}" y="30" fill="white" font-size="14">Speed: {game_state.speed:.1f}</text>
-    '''
-    
-    if game_state.paused:
-        svg_content += '''
-        <rect x="0" y="0" width="800" height="600" fill="rgba(0,0,0,0.5)"/>
-        <text x="400" y="280" text-anchor="middle" fill="#FFD93D" font-size="36" font-weight="bold">PAUSED</text>
-        <text x="400" y="320" text-anchor="middle" fill="white" font-size="18">Press P to Resume</text>
-        '''
-    
-    if game_state.game_over:
-        svg_content += f'''
-        <rect x="0" y="0" width="800" height="600" fill="rgba(0,0,0,0.7)"/>
-        <rect x="200" y="200" width="400" height="200" fill="#2C3E50" rx="20" stroke="#E74C3C" stroke-width="3"/>
-        <text x="400" y="240" text-anchor="middle" fill="#E74C3C" font-size="32" font-weight="bold">GAME OVER!</text>
-        <text x="400" y="270" text-anchor="middle" fill="#FFD93D" font-size="20">Final Score: {game_state.score}</text>
-        <text x="400" y="295" text-anchor="middle" fill="#4ECDC4" font-size="18">Distance: {int(game_state.distance)}</text>
-        <text x="400" y="320" text-anchor="middle" fill="#FF6B6B" font-size="18">Coins: {game_state.coins_collected}</text>
-        <text x="400" y="350" text-anchor="middle" fill="white" font-size="16">Press R to Restart</text>
-        '''
-    
-    svg_content += '</svg>'
-    return svg_content
-
-async def game_loop():
-    """Main game loop"""
-    while True:
-        if game_state.running:
-            update_game()
-            # Update the canvas
-            canvas.content = draw_game('')
-        await asyncio.sleep(1/60)  # 60 FPS
-
-def handle_keydown(e: events.KeyEventArguments):
-    """Handle key press events"""
-    game_state.keys_pressed.add(e.key)
-    
-    if e.key == 'Space' or e.key == 'ArrowUp':
-        if not game_state.running:
-            start_game()
-        elif game_state.player.on_ground and not game_state.game_over:
-            game_state.player.velocity_y = -JUMP_POWER
-    elif e.key == 'KeyP':
-        if game_state.running and not game_state.game_over:
-            game_state.paused = not game_state.paused
-    elif e.key == 'KeyR':
-        if game_state.game_over:
-            restart_game()
-
-def handle_keyup(e: events.KeyEventArguments):
-    """Handle key release events"""
-    game_state.keys_pressed.discard(e.key)
-
-def start_game():
-    """Start the game"""
-    game_state.running = True
-    game_state.paused = False
-    game_state.game_over = False
-
-def restart_game():
-    """Restart the game"""
-    game_state.reset()
-    start_game()
-
-# Create the main page
 @ui.page('/')
-async def main_page():
+def index():
     ui.add_head_html('''
-    <style>
-        body { 
-            margin: 0; 
-            padding: 0; 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            font-family: 'Arial', sans-serif;
-        }
-        .game-container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            padding: 20px;
-        }
-        .game-title {
-            color: #FFD93D;
-            font-size: 3rem;
-            font-weight: bold;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
-            margin-bottom: 20px;
-            text-align: center;
-        }
-        .game-canvas {
-            border: 4px solid #2C3E50;
-            border-radius: 15px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-            background: white;
-        }
-        .controls-info {
-            margin-top: 20px;
-            padding: 15px;
-            background: rgba(0,0,0,0.7);
-            border-radius: 10px;
-            color: white;
-            text-align: center;
-        }
-        .control-item {
-            margin: 5px 0;
-            font-size: 14px;
-        }
-    </style>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Subway Surfers - Endless Runner</title>
+        <style>
+            body { 
+                margin: 0; 
+                padding: 0; 
+                font-family: 'Arial', sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                overflow: hidden;
+            }
+            .game-container {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                background: linear-gradient(45deg, #FF6B6B, #4ECDC4, #45B7D1, #96CEB4, #FFEAA7);
+                background-size: 400% 400%;
+                animation: gradientShift 15s ease infinite;
+            }
+            @keyframes gradientShift {
+                0% { background-position: 0% 50%; }
+                50% { background-position: 100% 50%; }
+                100% { background-position: 0% 50%; }
+            }
+            .game-canvas {
+                border: 4px solid #2c3e50;
+                border-radius: 15px;
+                box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+                background: linear-gradient(to bottom, #87CEEB 0%, #98FB98 100%);
+            }
+            .game-ui {
+                position: absolute;
+                top: 20px;
+                left: 20px;
+                color: white;
+                font-size: 24px;
+                font-weight: bold;
+                text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+                z-index: 10;
+            }
+            .controls {
+                position: absolute;
+                bottom: 20px;
+                left: 50%;
+                transform: translateX(-50%);
+                color: white;
+                text-align: center;
+                font-size: 16px;
+                text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            }
+            .start-screen {
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                text-align: center;
+                color: white;
+                z-index: 20;
+            }
+            .game-title {
+                font-size: 48px;
+                font-weight: bold;
+                margin-bottom: 20px;
+                text-shadow: 3px 3px 6px rgba(0,0,0,0.5);
+                background: linear-gradient(45deg, #FF6B6B, #4ECDC4);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+            }
+            .start-button {
+                padding: 15px 30px;
+                font-size: 24px;
+                background: linear-gradient(45deg, #FF6B6B, #4ECDC4);
+                border: none;
+                border-radius: 25px;
+                color: white;
+                cursor: pointer;
+                transition: transform 0.3s ease;
+                box-shadow: 0 10px 20px rgba(0,0,0,0.3);
+            }
+            .start-button:hover {
+                transform: scale(1.1);
+            }
+        </style>
     ''')
     
-    with ui.column().classes('game-container'):
-        ui.html('<h1 class="game-title">🚇 SUBWAY SURFERS 🏃‍♂️</h1>')
+    with ui.element('div').classes('game-container'):
+        # Game UI overlay
+        with ui.element('div').classes('game-ui'):
+            ui.label('Score: 0').props('id="score-display"')
+            ui.label('High Score: 0').props('id="high-score-display"')
         
-        global canvas
-        canvas = ui.html(draw_game('')).classes('game-canvas')
+        # Start screen
+        with ui.element('div').classes('start-screen').props('id="start-screen"'):
+            ui.label('🚇 SUBWAY SURFERS').classes('game-title')
+            ui.button('START GAME', on_click='startGame()').classes('start-button')
+            ui.label('Use ARROW KEYS or WASD to move • SPACE to jump').style('margin-top: 20px; font-size: 16px;')
         
-        with ui.card().classes('controls-info'):
-            ui.html('''
-            <div class="control-item"><strong>🎮 CONTROLS:</strong></div>
-            <div class="control-item">← → or A D: Move left/right</div>
-            <div class="control-item">↑ or SPACE: Jump</div>
-            <div class="control-item">P: Pause/Resume</div>
-            <div class="control-item">R: Restart (when game over)</div>
-            <div class="control-item" style="margin-top: 10px;"><strong>🎯 GOAL:</strong> Avoid obstacles, collect coins!</div>
-            ''')
-    
-    # Set up keyboard event handlers
-    ui.keyboard(on_key=handle_keydown, events=['keydown'])
-    ui.keyboard(on_key=handle_keyup, events=['keyup'])
-    
-    # Start the game loop
-    asyncio.create_task(game_loop())
+        # Game canvas
+        ui.html('''
+            <canvas id="gameCanvas" class="game-canvas" width="800" height="400" style="display: none;"></canvas>
+        ''')
+        
+        # Controls info
+        with ui.element('div').classes('controls'):
+            ui.label('← → Move • ↑ Jump • P Pause • R Restart')
 
-# Health check endpoint for Fly.io
-@ui.page('/health')
-def health_check():
-    return {'status': 'healthy', 'timestamp': time.time()}
+    # Game JavaScript
+    ui.add_head_html('''
+        <script>
+            class SubwaySurfersGame {
+                constructor() {
+                    this.canvas = document.getElementById('gameCanvas');
+                    this.ctx = this.canvas.getContext('2d');
+                    this.gameWidth = 800;
+                    this.gameHeight = 400;
+                    
+                    // Game state
+                    this.gameStarted = false;
+                    this.gameOver = false;
+                    this.paused = false;
+                    this.score = 0;
+                    this.highScore = localStorage.getItem('subwaySurfersHighScore') || 0;
+                    
+                    // Player
+                    this.player = {
+                        x: 100,
+                        y: 300,
+                        width: 40,
+                        height: 60,
+                        velocityY: 0,
+                        jumping: false,
+                        lane: 1, // 0, 1, 2 (left, center, right)
+                        color: '#FF6B6B'
+                    };
+                    
+                    // Game objects
+                    this.obstacles = [];
+                    this.coins = [];
+                    this.powerUps = [];
+                    
+                    // Game settings
+                    this.gameSpeed = 5;
+                    this.gravity = 0.8;
+                    this.jumpPower = -15;
+                    this.lanes = [150, 350, 550];
+                    
+                    // Bind events
+                    this.bindEvents();
+                    
+                    // Update high score display
+                    document.getElementById('high-score-display').textContent = `High Score: ${this.highScore}`;
+                }
+                
+                bindEvents() {
+                    document.addEventListener('keydown', (e) => this.handleKeyDown(e));
+                    document.addEventListener('keyup', (e) => this.handleKeyUp(e));
+                }
+                
+                handleKeyDown(e) {
+                    if (!this.gameStarted || this.gameOver || this.paused) return;
+                    
+                    switch(e.code) {
+                        case 'ArrowLeft':
+                        case 'KeyA':
+                            this.moveLeft();
+                            break;
+                        case 'ArrowRight':
+                        case 'KeyD':
+                            this.moveRight();
+                            break;
+                        case 'ArrowUp':
+                        case 'KeyW':
+                        case 'Space':
+                            this.jump();
+                            e.preventDefault();
+                            break;
+                        case 'KeyP':
+                            this.togglePause();
+                            break;
+                        case 'KeyR':
+                            this.restart();
+                            break;
+                    }
+                }
+                
+                handleKeyUp(e) {
+                    // Handle key releases if needed
+                }
+                
+                moveLeft() {
+                    if (this.player.lane > 0) {
+                        this.player.lane--;
+                        this.player.x = this.lanes[this.player.lane];
+                    }
+                }
+                
+                moveRight() {
+                    if (this.player.lane < 2) {
+                        this.player.lane++;
+                        this.player.x = this.lanes[this.player.lane];
+                    }
+                }
+                
+                jump() {
+                    if (!this.player.jumping) {
+                        this.player.velocityY = this.jumpPower;
+                        this.player.jumping = true;
+                    }
+                }
+                
+                togglePause() {
+                    this.paused = !this.paused;
+                    if (!this.paused) {
+                        this.gameLoop();
+                    }
+                }
+                
+                restart() {
+                    this.gameOver = false;
+                    this.score = 0;
+                    this.gameSpeed = 5;
+                    this.player.x = this.lanes[1];
+                    this.player.y = 300;
+                    this.player.lane = 1;
+                    this.player.velocityY = 0;
+                    this.player.jumping = false;
+                    this.obstacles = [];
+                    this.coins = [];
+                    this.powerUps = [];
+                    this.gameLoop();
+                }
+                
+                start() {
+                    this.gameStarted = true;
+                    document.getElementById('start-screen').style.display = 'none';
+                    this.canvas.style.display = 'block';
+                    this.player.x = this.lanes[1];
+                    this.gameLoop();
+                }
+                
+                update() {
+                    if (this.gameOver || this.paused) return;
+                    
+                    // Update player physics
+                    this.player.velocityY += this.gravity;
+                    this.player.y += this.player.velocityY;
+                    
+                    // Ground collision
+                    if (this.player.y >= 300) {
+                        this.player.y = 300;
+                        this.player.velocityY = 0;
+                        this.player.jumping = false;
+                    }
+                    
+                    // Update obstacles
+                    this.obstacles.forEach(obstacle => {
+                        obstacle.x -= this.gameSpeed;
+                    });
+                    this.obstacles = this.obstacles.filter(obstacle => obstacle.x + obstacle.width > 0);
+                    
+                    // Update coins
+                    this.coins.forEach(coin => {
+                        coin.x -= this.gameSpeed;
+                        coin.rotation += 0.1;
+                    });
+                    this.coins = this.coins.filter(coin => coin.x + coin.width > 0);
+                    
+                    // Generate obstacles
+                    if (Math.random() < 0.02) {
+                        this.generateObstacle();
+                    }
+                    
+                    // Generate coins
+                    if (Math.random() < 0.03) {
+                        this.generateCoin();
+                    }
+                    
+                    // Check collisions
+                    this.checkCollisions();
+                    
+                    // Update score
+                    this.score += 1;
+                    this.gameSpeed += 0.001; // Gradually increase speed
+                    
+                    // Update score display
+                    document.getElementById('score-display').textContent = `Score: ${Math.floor(this.score)}`;
+                }
+                
+                generateObstacle() {
+                    const lane = Math.floor(Math.random() * 3);
+                    const types = ['barrier', 'train', 'sign'];
+                    const type = types[Math.floor(Math.random() * types.length)];
+                    
+                    this.obstacles.push({
+                        x: this.gameWidth,
+                        y: type === 'barrier' ? 280 : 250,
+                        width: type === 'train' ? 80 : 40,
+                        height: type === 'train' ? 100 : 80,
+                        lane: lane,
+                        type: type,
+                        color: type === 'train' ? '#E74C3C' : type === 'barrier' ? '#F39C12' : '#9B59B6'
+                    });
+                }
+                
+                generateCoin() {
+                    const lane = Math.floor(Math.random() * 3);
+                    this.coins.push({
+                        x: this.gameWidth,
+                        y: 200 + Math.random() * 100,
+                        width: 20,
+                        height: 20,
+                        lane: lane,
+                        rotation: 0,
+                        collected: false
+                    });
+                }
+                
+                checkCollisions() {
+                    // Check obstacle collisions
+                    this.obstacles.forEach(obstacle => {
+                        if (this.isColliding(this.player, obstacle)) {
+                            this.endGame();
+                        }
+                    });
+                    
+                    // Check coin collisions
+                    this.coins.forEach(coin => {
+                        if (!coin.collected && this.isColliding(this.player, coin)) {
+                            coin.collected = true;
+                            this.score += 50;
+                            // Remove collected coin
+                            const index = this.coins.indexOf(coin);
+                            this.coins.splice(index, 1);
+                        }
+                    });
+                }
+                
+                isColliding(rect1, rect2) {
+                    return rect1.x < rect2.x + rect2.width &&
+                           rect1.x + rect1.width > rect2.x &&
+                           rect1.y < rect2.y + rect2.height &&
+                           rect1.y + rect1.height > rect2.y;
+                }
+                
+                endGame() {
+                    this.gameOver = true;
+                    
+                    // Update high score
+                    if (this.score > this.highScore) {
+                        this.highScore = Math.floor(this.score);
+                        localStorage.setItem('subwaySurfersHighScore', this.highScore);
+                        document.getElementById('high-score-display').textContent = `High Score: ${this.highScore}`;
+                    }
+                    
+                    // Submit score to backend
+                    this.submitScore(Math.floor(this.score));
+                }
+                
+                async submitScore(score) {
+                    try {
+                        await fetch('/api/scores/submit', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ score: score })
+                        });
+                    } catch (error) {
+                        console.error('Failed to submit score:', error);
+                    }
+                }
+                
+                render() {
+                    // Clear canvas
+                    this.ctx.clearRect(0, 0, this.gameWidth, this.gameHeight);
+                    
+                    // Draw background
+                    const gradient = this.ctx.createLinearGradient(0, 0, 0, this.gameHeight);
+                    gradient.addColorStop(0, '#87CEEB');
+                    gradient.addColorStop(1, '#98FB98');
+                    this.ctx.fillStyle = gradient;
+                    this.ctx.fillRect(0, 0, this.gameWidth, this.gameHeight);
+                    
+                    // Draw lanes
+                    this.ctx.strokeStyle = '#34495E';
+                    this.ctx.lineWidth = 3;
+                    this.ctx.setLineDash([10, 10]);
+                    for (let i = 1; i < 3; i++) {
+                        const x = this.lanes[i] - 75;
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(x, 0);
+                        this.ctx.lineTo(x, this.gameHeight);
+                        this.ctx.stroke();
+                    }
+                    this.ctx.setLineDash([]);
+                    
+                    // Draw ground
+                    this.ctx.fillStyle = '#2C3E50';
+                    this.ctx.fillRect(0, 360, this.gameWidth, 40);
+                    
+                    // Draw player
+                    this.ctx.fillStyle = this.player.color;
+                    this.ctx.fillRect(this.player.x - this.player.width/2, this.player.y - this.player.height, 
+                                     this.player.width, this.player.height);
+                    
+                    // Draw player details (simple character)
+                    this.ctx.fillStyle = '#2C3E50';
+                    this.ctx.fillRect(this.player.x - 15, this.player.y - 50, 30, 20); // Head
+                    this.ctx.fillStyle = '#FFFFFF';
+                    this.ctx.fillRect(this.player.x - 10, this.player.y - 45, 8, 8); // Eyes
+                    this.ctx.fillRect(this.player.x + 2, this.player.y - 45, 8, 8);
+                    
+                    // Draw obstacles
+                    this.obstacles.forEach(obstacle => {
+                        this.ctx.fillStyle = obstacle.color;
+                        this.ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                        
+                        // Add details based on type
+                        if (obstacle.type === 'train') {
+                            this.ctx.fillStyle = '#FFFFFF';
+                            this.ctx.fillRect(obstacle.x + 10, obstacle.y + 10, 60, 20);
+                            this.ctx.fillStyle = '#2C3E50';
+                            this.ctx.fillRect(obstacle.x + 5, obstacle.y + 80, 20, 20);
+                            this.ctx.fillRect(obstacle.x + 55, obstacle.y + 80, 20, 20);
+                        }
+                    });
+                    
+                    // Draw coins
+                    this.coins.forEach(coin => {
+                        this.ctx.save();
+                        this.ctx.translate(coin.x + coin.width/2, coin.y + coin.height/2);
+                        this.ctx.rotate(coin.rotation);
+                        this.ctx.fillStyle = '#F1C40F';
+                        this.ctx.fillRect(-coin.width/2, -coin.height/2, coin.width, coin.height);
+                        this.ctx.fillStyle = '#F39C12';
+                        this.ctx.fillRect(-coin.width/2 + 3, -coin.height/2 + 3, coin.width - 6, coin.height - 6);
+                        this.ctx.restore();
+                    });
+                    
+                    // Draw game over screen
+                    if (this.gameOver) {
+                        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                        this.ctx.fillRect(0, 0, this.gameWidth, this.gameHeight);
+                        
+                        this.ctx.fillStyle = '#FFFFFF';
+                        this.ctx.font = 'bold 48px Arial';
+                        this.ctx.textAlign = 'center';
+                        this.ctx.fillText('GAME OVER', this.gameWidth/2, this.gameHeight/2 - 50);
+                        
+                        this.ctx.font = '24px Arial';
+                        this.ctx.fillText(`Final Score: ${Math.floor(this.score)}`, this.gameWidth/2, this.gameHeight/2);
+                        this.ctx.fillText('Press R to Restart', this.gameWidth/2, this.gameHeight/2 + 50);
+                    }
+                    
+                    // Draw pause screen
+                    if (this.paused && !this.gameOver) {
+                        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                        this.ctx.fillRect(0, 0, this.gameWidth, this.gameHeight);
+                        
+                        this.ctx.fillStyle = '#FFFFFF';
+                        this.ctx.font = 'bold 36px Arial';
+                        this.ctx.textAlign = 'center';
+                        this.ctx.fillText('PAUSED', this.gameWidth/2, this.gameHeight/2);
+                        this.ctx.font = '18px Arial';
+                        this.ctx.fillText('Press P to Resume', this.gameWidth/2, this.gameHeight/2 + 40);
+                    }
+                }
+                
+                gameLoop() {
+                    if (!this.paused) {
+                        this.update();
+                        this.render();
+                        
+                        if (!this.gameOver) {
+                            requestAnimationFrame(() => this.gameLoop());
+                        }
+                    }
+                }
+            }
+            
+            // Initialize game
+            let game;
+            
+            function startGame() {
+                if (!game) {
+                    game = new SubwaySurfersGame();
+                }
+                game.start();
+            }
+            
+            // Initialize when page loads
+            document.addEventListener('DOMContentLoaded', function() {
+                game = new SubwaySurfersGame();
+            });
+        </script>
+    ''')
+
+@ui.page('/leaderboard')
+def leaderboard():
+    ui.add_head_html('<title>Leaderboard - Subway Surfers</title>')
+    
+    with ui.column().classes('w-full max-w-4xl mx-auto p-8'):
+        ui.label('🏆 LEADERBOARD').classes('text-4xl font-bold text-center mb-8')
+        
+        # Leaderboard will be populated via API call
+        ui.html('<div id="leaderboard-content">Loading...</div>')
+        
+        ui.button('Back to Game', on_click=lambda: ui.open('/')).classes('mt-4')
+    
+    ui.run_javascript('''
+        async function loadLeaderboard() {
+            try {
+                const response = await fetch('/api/scores/leaderboard');
+                const scores = await response.json();
+                
+                let html = '<div class="space-y-4">';
+                scores.forEach((score, index) => {
+                    html += `
+                        <div class="flex justify-between items-center p-4 bg-white rounded-lg shadow">
+                            <span class="font-bold text-lg">#${index + 1}</span>
+                            <span class="text-xl">${score.score}</span>
+                            <span class="text-gray-500">${new Date(score.created_at).toLocaleDateString()}</span>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                
+                document.getElementById('leaderboard-content').innerHTML = html;
+            } catch (error) {
+                document.getElementById('leaderboard-content').innerHTML = 
+                    '<p class="text-red-500">Failed to load leaderboard</p>';
+            }
+        }
+        
+        loadLeaderboard();
+    ''')
